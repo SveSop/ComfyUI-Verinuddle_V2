@@ -28,13 +28,13 @@ Clone this repository into `ComfyUI/custom_nodes` and restart ComfyUI:
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/verigen/verinuddle.git
+git clone https://github.com/verigen/ComfyUI-Verinuddle.git
 ```
 
 ## Develop
 
 ```bash
-cd verinuddle
+cd ComfyUI-Verinuddle
 pip install -e .[dev]
 pre-commit install
 pytest tests/

@@ -27,15 +27,15 @@ dev = [
 ]
 
 [project.urls]
-Repository = "https://github.com/verigen/verinuddle"
-BugTracker = "https://github.com/verigen/verinuddle/issues"
+Repository = "https://github.com/verigen/ComfyUI-Verinuddle"
+BugTracker = "https://github.com/verigen/ComfyUI-Verinuddle/issues"
 
 [tool.comfy]
 PublisherId = "verigen"
 DisplayName = "Verinuddle"
 Icon = ""
 Tags = ["latent", "io"]
-Repository = "https://github.com/verigen/verinuddle"
+Repository = "https://github.com/verigen/ComfyUI-Verinuddle"
 
 includes = []
 
