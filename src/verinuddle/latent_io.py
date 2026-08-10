@@ -22,6 +22,8 @@ import json
 import os
 
 import safetensors.torch
+import folder_paths
+from comfy.cli_args import args
 from comfy_api.latest import io
 
 try:
@@ -210,3 +212,90 @@ class ImportLatent(io.ComfyNode):
     @classmethod
     def fingerprint_inputs(cls, path):
         return _fingerprint_file(path)
+
+
+class VerinuddleSaveLatent(io.ComfyNode):
+    """Faithful mirror of core SaveLatent (nodes.py), routed through the nested-aware codec."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="verinuddle_SaveLatent",
+            display_name="Save Latent",
+            search_aliases=["export latent", "save latent"],
+            category=_CAT,
+            inputs=[
+                io.Latent.Input("samples"),
+                io.String.Input("filename_prefix", default="latents/ComfyUI"),
+            ],
+            outputs=[io.Latent.Output()],
+            hidden=[io.Hidden.prompt, io.Hidden.extra_pnginfo],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def execute(cls, samples, filename_prefix="latents/ComfyUI") -> io.NodeOutput:
+        full_output_folder, filename, counter, subfolder, _ = folder_paths.get_save_image_path(
+            filename_prefix, folder_paths.get_output_directory()
+        )
+
+        metadata = None
+        if not args.disable_metadata:
+            prompt_info = json.dumps(cls.hidden.prompt) if cls.hidden.prompt is not None else ""
+            metadata = {"prompt": prompt_info}
+            if cls.hidden.extra_pnginfo is not None:
+                for x in cls.hidden.extra_pnginfo:
+                    metadata[x] = json.dumps(cls.hidden.extra_pnginfo[x])
+
+        tensors, latent_metadata = build_latent_tensors_and_metadata(samples)
+        if metadata is not None:
+            metadata.update(latent_metadata)
+        else:
+            metadata = latent_metadata
+
+        file = f"{filename}_{counter:05}_.latent"
+        results = [{"filename": file, "subfolder": subfolder, "type": "output"}]
+
+        safetensors.torch.save_file(tensors, os.path.join(full_output_folder, file), metadata=metadata)
+        return io.NodeOutput(samples, ui={"latents": results})
+
+
+class VerinuddleLoadLatent(io.ComfyNode):
+    """Faithful mirror of core LoadLatent (nodes.py), routed through the nested-aware codec."""
+
+    @classmethod
+    def define_schema(cls):
+        input_dir = folder_paths.get_input_directory()
+        files = [
+            f for f in os.listdir(input_dir)
+            if os.path.isfile(os.path.join(input_dir, f)) and f.endswith(".latent")
+        ]
+        return io.Schema(
+            node_id="verinuddle_LoadLatent",
+            display_name="Load Latent",
+            search_aliases=["import latent", "open latent"],
+            category=_CAT,
+            inputs=[
+                io.Combo.Input("latent", options=sorted(files)),
+            ],
+            outputs=[io.Latent.Output()],
+        )
+
+    @classmethod
+    def execute(cls, latent) -> io.NodeOutput:
+        latent_path = folder_paths.get_annotated_filepath(latent)
+        tensors = safetensors.torch.load_file(latent_path, device="cpu")
+        with safetensors.safe_open(latent_path, framework="pt") as f:
+            metadata = f.metadata()
+        samples = latent_from_tensors_and_metadata(tensors, metadata)
+        return io.NodeOutput(samples)
+
+    @classmethod
+    def fingerprint_inputs(cls, latent):
+        return _fingerprint_file(folder_paths.get_annotated_filepath(latent))
+
+    @classmethod
+    def validate_inputs(cls, latent):
+        if not folder_paths.exists_annotated_filepath(latent):
+            return f"Invalid latent file: {latent}"
+        return True

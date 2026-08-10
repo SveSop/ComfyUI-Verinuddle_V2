@@ -1,7 +1,7 @@
 from comfy_api.latest import ComfyExtension, io
 from typing_extensions import override
 
-from .latent_io import ExportLatent, ImportLatent
+from .latent_io import ExportLatent, ImportLatent, VerinuddleSaveLatent, VerinuddleLoadLatent
 
 
 class VerinuddleExtension(ComfyExtension):
@@ -10,6 +10,8 @@ class VerinuddleExtension(ComfyExtension):
         return [
             ExportLatent,
             ImportLatent,
+            VerinuddleSaveLatent,
+            VerinuddleLoadLatent,
         ]
 
 
