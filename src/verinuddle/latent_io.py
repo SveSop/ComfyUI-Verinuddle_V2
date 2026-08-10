@@ -19,6 +19,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+
+import safetensors.torch
+from comfy_api.latest import io
 
 try:
     from comfy.nested_tensor import NestedTensor
@@ -141,3 +145,68 @@ def _fingerprint_file(path: str):
         return m.hexdigest()
     except OSError:
         return float("nan")
+
+
+class ExportLatent(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="verinuddle_ExportLatent",
+            display_name="Save Latent (Path)",
+            search_aliases=["export latent"],
+            category=_CAT,
+            inputs=[
+                io.Latent.Input("samples"),
+                io.String.Input(
+                    "path", default="",
+                    tooltip="Absolute file path to write the latent to (safetensors). "
+                    "\".latent\" is appended if the path has no extension.",
+                ),
+                io.Boolean.Input(
+                    "create_dirs", default=True,
+                    tooltip="Create parent directories if they don't exist.",
+                ),
+            ],
+            outputs=[io.Latent.Output()],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def execute(cls, samples, path, create_dirs=True) -> io.NodeOutput:
+        if not os.path.splitext(path)[1]:
+            path = f"{path}.latent"
+        tensors, metadata = build_latent_tensors_and_metadata(samples)
+        parent = os.path.dirname(path)
+        if parent and create_dirs:
+            os.makedirs(parent, exist_ok=True)
+        safetensors.torch.save_file(tensors, path, metadata=metadata)
+        return io.NodeOutput(samples, ui={"text": [f"wrote {path}"]})
+
+
+class ImportLatent(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="verinuddle_ImportLatent",
+            display_name="Load Latent (Path)",
+            search_aliases=["import latent"],
+            category=_CAT,
+            inputs=[
+                io.String.Input("path", default="", tooltip="Absolute path of a .latent/.safetensors file to read."),
+            ],
+            outputs=[io.Latent.Output()],
+        )
+
+    @classmethod
+    def execute(cls, path) -> io.NodeOutput:
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"ImportLatent: file not found: {path!r}")
+        tensors = safetensors.torch.load_file(path, device="cpu")
+        with safetensors.safe_open(path, framework="pt") as f:
+            metadata = f.metadata()
+        samples = latent_from_tensors_and_metadata(tensors, metadata)
+        return io.NodeOutput(samples)
+
+    @classmethod
+    def fingerprint_inputs(cls, path):
+        return _fingerprint_file(path)
