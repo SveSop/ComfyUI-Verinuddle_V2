@@ -17,16 +17,23 @@ each metadata field exists, which is easy to get wrong by guessing.
   they don't require a ComfyUI install (see the file's own docstring).
 - `docs/latent_io.md` — on-disk schema, nested-stream contract, interop matrix.
 
-## Nodes (id → title)
+## Nodes (class → id → title)
 
-- `verinuddle_SaveLatent` → **Save Latent** (`output/`, filename_prefix + counter)
-- `verinuddle_LoadLatent` → **Load Latent** (flat combo over `input/`)
-- `verinuddle_ExportLatent` → **Save Latent (Path)** (arbitrary path)
-- `verinuddle_ImportLatent` → **Load Latent (Path)** (arbitrary path)
+- `SaveLatent` → `verinuddle_SaveLatent` → **Save Latent** (`output/`, filename_prefix + counter)
+- `LoadLatent` → `verinuddle_LoadLatent` → **Load Latent** (flat combo over `input/`)
+- `SaveLatentPath` → `verinuddle_SaveLatentPath` → **Save Latent (Path)** (arbitrary path)
+- `LoadLatentPath` → `verinuddle_LoadLatentPath` → **Load Latent (Path)** (arbitrary path)
 
 The folder-pair titles intentionally match core's built-in "Save Latent"/"Load
-Latent" node titles — that's deliberate, not an oversight. Node ids stay
-`verinuddle_`-prefixed and distinct from core's so nothing gets shadowed.
+Latent" node titles — that's deliberate, not an oversight.
+
+Class names are plain and unprefixed: Python class names are scoped to this
+package's own module and never collide with another custom-node pack's
+classes, so a `Verinuddle`/`Verigen` prefix on the class buys nothing. Node
+ids are different — those are registered in one global namespace shared by
+every installed custom-node pack, so they keep the `verinuddle_` prefix to
+stay unique and distinct from core's own `SaveLatent`/`LoadLatent` ids (which
+would otherwise be shadowed).
 
 ## Conventions
 

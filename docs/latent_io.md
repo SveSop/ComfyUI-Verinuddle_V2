@@ -6,8 +6,8 @@ Four nodes, one shared codec (`src/verinuddle/latent_io.py`):
 |---|---|---|
 | Save Latent | `verinuddle_SaveLatent` | `output/`, `filename_prefix` + counter, like core |
 | Load Latent | `verinuddle_LoadLatent` | flat combo over `input/`, like core |
-| Save Latent (Path) | `verinuddle_ExportLatent` | arbitrary absolute path |
-| Load Latent (Path) | `verinuddle_ImportLatent` | arbitrary absolute path |
+| Save Latent (Path) | `verinuddle_SaveLatentPath` | arbitrary absolute path |
+| Load Latent (Path) | `verinuddle_LoadLatentPath` | arbitrary absolute path |
 
 All four route through `build_latent_tensors_and_metadata` / `latent_from_tensors_and_metadata`.
 The folder pair is a faithful mirror of core's `SaveLatent`/`LoadLatent` (same

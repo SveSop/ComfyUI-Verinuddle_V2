@@ -149,11 +149,11 @@ def _fingerprint_file(path: str):
         return float("nan")
 
 
-class ExportLatent(io.ComfyNode):
+class SaveLatentPath(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="verinuddle_ExportLatent",
+            node_id="verinuddle_SaveLatentPath",
             display_name="Save Latent (Path)",
             search_aliases=["export latent"],
             category=_CAT,
@@ -185,11 +185,11 @@ class ExportLatent(io.ComfyNode):
         return io.NodeOutput(samples, ui={"text": [f"wrote {path}"]})
 
 
-class ImportLatent(io.ComfyNode):
+class LoadLatentPath(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="verinuddle_ImportLatent",
+            node_id="verinuddle_LoadLatentPath",
             display_name="Load Latent (Path)",
             search_aliases=["import latent"],
             category=_CAT,
@@ -202,7 +202,7 @@ class ImportLatent(io.ComfyNode):
     @classmethod
     def execute(cls, path) -> io.NodeOutput:
         if not os.path.isfile(path):
-            raise FileNotFoundError(f"ImportLatent: file not found: {path!r}")
+            raise FileNotFoundError(f"LoadLatentPath: file not found: {path!r}")
         tensors = safetensors.torch.load_file(path, device="cpu")
         with safetensors.safe_open(path, framework="pt") as f:
             metadata = f.metadata()
@@ -214,7 +214,7 @@ class ImportLatent(io.ComfyNode):
         return _fingerprint_file(path)
 
 
-class VerinuddleSaveLatent(io.ComfyNode):
+class SaveLatent(io.ComfyNode):
     """Faithful mirror of core SaveLatent (nodes.py), routed through the nested-aware codec."""
 
     @classmethod
@@ -260,7 +260,7 @@ class VerinuddleSaveLatent(io.ComfyNode):
         return io.NodeOutput(samples, ui={"latents": results})
 
 
-class VerinuddleLoadLatent(io.ComfyNode):
+class LoadLatent(io.ComfyNode):
     """Faithful mirror of core LoadLatent (nodes.py), routed through the nested-aware codec."""
 
     @classmethod
