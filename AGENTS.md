@@ -1,21 +1,30 @@
 # Verinuddle — agent notes
 
-ComfyUI custom-node pack: four Save/Load Latent nodes that route through one
-shared safetensors codec, which auto-detects `comfy.nested_tensor.NestedTensor`
-samples (e.g. video+audio AV latents) and round-trips them instead of crashing
-the way core's `SaveLatent` does. See `docs/latent_io.md` for the on-disk
-schema and interop details before touching `latent_io.py` — it documents *why*
-each metadata field exists, which is easy to get wrong by guessing.
+ComfyUI custom-node pack: Save/Load nodes for `LATENT` and `CONDITIONING` that route
+through per-type safetensors codecs. The latent codec auto-detects
+`comfy.nested_tensor.NestedTensor` samples (e.g. video+audio AV latents) and
+round-trips them instead of crashing the way core's `SaveLatent` does. The
+conditioning codec generically walks and reassembles the open-ended
+`list[[tensor, dict]]` structure (e.g. MiniMax H3's `minimax_keyframes`/
+`minimax_refs`) instead of hard-coding a fixed key list. See `docs/latent_io.md`
+and `docs/conditioning_io.md` for on-disk schema and interop details before
+touching either `*_io.py` module — they document *why* each metadata field
+exists, which is easy to get wrong by guessing.
 
 ## Layout
 
 - `__init__.py` — package entry point ComfyUI loads; re-exports `comfy_entrypoint`.
 - `src/verinuddle/__init__.py` — `ComfyExtension` node list.
-- `src/verinuddle/latent_io.py` — the codec (`build_latent_tensors_and_metadata`
-  / `latent_from_tensors_and_metadata`) plus the four node classes.
-- `tests/test_latent_io.py` — codec tests, imported as a standalone module so
-  they don't require a ComfyUI install (see the file's own docstring).
-- `docs/latent_io.md` — on-disk schema, nested-stream contract, interop matrix.
+- `src/verinuddle/latent_io.py` — the LATENT codec (`build_latent_tensors_and_metadata`
+  / `latent_from_tensors_and_metadata`) plus its five node classes.
+- `src/verinuddle/conditioning_io.py` — the CONDITIONING codec
+  (`build_conditioning_tensors_and_metadata` / `conditioning_from_tensors_and_metadata`)
+  plus its five node classes.
+- `tests/test_latent_io.py`, `tests/test_conditioning_io.py` — codec tests, imported
+  as standalone modules so they don't require a ComfyUI install (see each file's own
+  docstring).
+- `docs/latent_io.md`, `docs/conditioning_io.md` — on-disk schema, nested-stream/
+  generic-walk contract, interop matrix.
 
 ## Nodes (class → id → title)
 
@@ -23,9 +32,29 @@ each metadata field exists, which is easy to get wrong by guessing.
 - `LoadLatent` → `verinuddle_LoadLatent` → **Load Latent** (flat combo over `input/`)
 - `SaveLatentPath` → `verinuddle_SaveLatentPath` → **Save Latent (Path)** (arbitrary path)
 - `LoadLatentPath` → `verinuddle_LoadLatentPath` → **Load Latent (Path)** (arbitrary path)
+- `BackupLatentPath` → `verinuddle_BackupLatentPath` → **Backup Latent (Path)** (Save/Load
+  merged behind a `save` switch; `samples` is a lazy input so Load mode never executes
+  the upstream graph that would have produced it; `stop_here` does the opposite --
+  in Save mode it returns an `ExecutionBlocker` so nothing downstream of this node's
+  output executes either, letting a workflow split into independently-queueable phases)
+
+- `SaveConditioning` → `verinuddle_SaveConditioning` → **Save Conditioning** (`output/`,
+  filename_prefix + counter)
+- `LoadConditioning` → `verinuddle_LoadConditioning` → **Load Conditioning** (flat combo
+  over `input/`)
+- `SaveConditioningPath` → `verinuddle_SaveConditioningPath` → **Save Conditioning
+  (Path)** (arbitrary path)
+- `LoadConditioningPath` → `verinuddle_LoadConditioningPath` → **Load Conditioning
+  (Path)** (arbitrary path)
+- `BackupConditioningPath` → `verinuddle_BackupConditioningPath` → **Backup
+  Conditioning (Path)** (same save/lazy/`stop_here` semantics as `BackupLatentPath`,
+  for splitting an expensive conditioning-producing workflow, e.g. MiniMax H3 encode,
+  from the sampling phase that consumes it)
 
 The folder-pair titles intentionally match core's built-in "Save Latent"/"Load
-Latent" node titles — that's deliberate, not an oversight.
+Latent" node titles — that's deliberate, not an oversight. (Core has no built-in
+Save/Load Conditioning nodes, so the conditioning folder pair has no core
+counterpart to match; the titles just follow the latent pair's naming style.)
 
 Class names are plain and unprefixed: Python class names are scoped to this
 package's own module and never collide with another custom-node pack's
@@ -43,6 +72,11 @@ would otherwise be shadowed).
   `SaveLatent` output — don't add codec fields that change that path.
 - Missing/corrupt nested-stream metadata should raise a clear `ValueError`/
   `RuntimeError`, not silently truncate or guess.
+- `conditioning_io.py`'s recursive walk raises `TypeError` on any leaf that isn't a
+  tensor or a JSON-safe scalar/list/dict/tuple (e.g. a ControlNet object), and
+  `RuntimeError` on a `NestedTensor` leaf — conditioning as produced by core/MiniMax H3
+  never contains either today, so these are deliberate scope limits, not gaps to
+  silently paper over by guessing an encoding.
 - No dependency beyond what ComfyUI itself already provides at runtime
   (`torch`, `safetensors`, `folder_paths`, `comfy_api`) — keep `pyproject.toml`
   dependencies empty.

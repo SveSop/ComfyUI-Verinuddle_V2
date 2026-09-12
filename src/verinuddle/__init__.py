@@ -1,7 +1,14 @@
 from comfy_api.latest import ComfyExtension, io
 from typing_extensions import override
 
-from .latent_io import SaveLatentPath, LoadLatentPath, SaveLatent, LoadLatent
+from .latent_io import SaveLatentPath, LoadLatentPath, BackupLatentPath, SaveLatent, LoadLatent
+from .conditioning_io import (
+    SaveConditioningPath,
+    LoadConditioningPath,
+    BackupConditioningPath,
+    SaveConditioning,
+    LoadConditioning,
+)
 
 
 class VerinuddleExtension(ComfyExtension):
@@ -10,8 +17,14 @@ class VerinuddleExtension(ComfyExtension):
         return [
             SaveLatentPath,
             LoadLatentPath,
+            BackupLatentPath,
             SaveLatent,
             LoadLatent,
+            SaveConditioningPath,
+            LoadConditioningPath,
+            BackupConditioningPath,
+            SaveConditioning,
+            LoadConditioning,
         ]
 
 

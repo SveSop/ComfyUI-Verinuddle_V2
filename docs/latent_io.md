@@ -1,6 +1,6 @@
 # Latent I/O
 
-Four nodes, one shared codec (`src/verinuddle/latent_io.py`):
+Five nodes, one shared codec (`src/verinuddle/latent_io.py`):
 
 | Title | id | Location semantics |
 |---|---|---|
@@ -8,8 +8,9 @@ Four nodes, one shared codec (`src/verinuddle/latent_io.py`):
 | Load Latent | `verinuddle_LoadLatent` | flat combo over `input/`, like core |
 | Save Latent (Path) | `verinuddle_SaveLatentPath` | arbitrary absolute path |
 | Load Latent (Path) | `verinuddle_LoadLatentPath` | arbitrary absolute path |
+| Backup Latent (Path) | `verinuddle_BackupLatentPath` | arbitrary absolute path, Save/Load merged behind a `save` switch |
 
-All four route through `build_latent_tensors_and_metadata` / `latent_from_tensors_and_metadata`.
+All five route through `build_latent_tensors_and_metadata` / `latent_from_tensors_and_metadata`.
 The folder pair is a faithful mirror of core's `SaveLatent`/`LoadLatent` (same
 `filename_prefix`/counter scheme, same flat `input/` listing, same fingerprinting) —
 the only behavioural difference from core is the codec underneath.
@@ -73,3 +74,49 @@ building a short nested tensor.
 - `comfy.nested_tensor` import is guarded (`try`/`except ImportError`) so this module
   still loads on ComfyUI builds that predate nested-tensor support; loading a nested
   file on such a build raises instead of silently truncating to stream 0.
+
+## Backup Latent (Path): lazy execution
+
+`BackupLatentPath` combines `SaveLatentPath`/`LoadLatentPath` behind a `save` boolean.
+The point of the node isn't the if/else (trivial) — it's that in Load mode (`save=False`),
+whatever graph produces `samples` must not run at all, otherwise "Backup" is no cheaper
+than wiring Save and Load side by side.
+
+This relies on ComfyUI's built-in lazy-evaluation feature, the same mechanism used by
+the core "If/Else Switch" node (`comfy_extras/nodes_logic.py`, `SwitchNode`):
+
+- `samples` is declared `io.Latent.Input("samples", lazy=True)`. Lazy inputs are excluded
+  from the graph's initial topological sort — their upstream producers are not scheduled
+  by default.
+- `check_lazy_status(save, samples=None, ...)` only requests `"samples"` when `save` is
+  true. When it returns `[]`, no strong link is ever added from `samples` back to its
+  producer, so that producer (and everything feeding only it) never executes.
+- `save`/`path`/`create_dirs` stay non-lazy so their values are available before
+  `check_lazy_status` has to decide.
+
+`ExecutionBlocker` was not used for the Load-mode side: it can only suppress nodes
+*downstream* of a node that already ran, not prevent an *upstream* producer from
+running — the opposite of what Load mode needs.
+
+## Backup Latent (Path): `stop_here` (downstream cutoff)
+
+`stop_here` is the downstream counterpart to the lazy-`samples` optimization above, for
+the opposite scenario: after Save writes a checkpoint, whatever comes next in the graph
+(e.g. frame interpolation) can be just as expensive as generation itself. Enabling
+`stop_here` (Save mode only) lets that be a genuinely separate, independently-queueable
+phase instead of always running end-to-end.
+
+This *is* exactly the case `ExecutionBlocker` (`comfy_execution/graph.py`,
+re-exported from `comfy_execution/graph_utils.py`) is meant for: the node has already
+executed (the save already happened) and now needs to stop *specific downstream
+consumers* — its own output's consumers — from running. When `stop_here` is true,
+`execute` returns `io.NodeOutput(ExecutionBlocker(None), ...)` instead of the real
+samples. `ExecutionBlocker(None)` (message `None`) blocks silently: no error toast,
+no exception; the blocked nodes just don't run (treated as a normal, successful no-op).
+
+Only nodes that actually consume this node's *output* socket are affected — the
+blocker value propagates strictly along that data-flow path (`execution.py`'s
+per-node input check). Anything else in the graph -- unrelated branches, other
+outputs run in parallel -- is untouched and executes exactly as if `stop_here` were
+off. `stop_here` has no effect at all in Load mode: the loaded latent always flows to
+the output, since Load exists specifically to feed the next phase.

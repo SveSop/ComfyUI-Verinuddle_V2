@@ -25,6 +25,7 @@ import safetensors.torch
 import folder_paths
 from comfy.cli_args import args
 from comfy_api.latest import io
+from comfy_execution.graph_utils import ExecutionBlocker
 
 try:
     from comfy.nested_tensor import NestedTensor
@@ -212,6 +213,96 @@ class LoadLatentPath(io.ComfyNode):
     @classmethod
     def fingerprint_inputs(cls, path):
         return _fingerprint_file(path)
+
+
+class BackupLatentPath(io.ComfyNode):
+    """Save+Load (Path) merged behind one switch, with graph execution optimized
+    in both directions:
+
+    - ``samples`` is declared lazy so that in Load mode (save=False), ComfyUI's
+      execution engine never schedules whatever upstream graph would have
+      produced it -- see check_lazy_status.
+    - ``stop_here`` (Save mode only) returns an ExecutionBlocker in place of the
+      real output, so nothing wired downstream of this node executes either --
+      see execute. This lets a workflow be split into independently-queueable
+      phases (e.g. generation, then a separate run for frame interpolation)
+      around a saved checkpoint.
+    """
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="verinuddle_BackupLatentPath",
+            display_name="Backup Latent (Path)",
+            search_aliases=["save or load latent", "latent backup"],
+            category=_CAT,
+            inputs=[
+                io.Boolean.Input(
+                    "save", default=True,
+                    label_on="Save", label_off="Load",
+                    tooltip="Save: write samples to path and pass them through unchanged. "
+                    "Load: ignore samples (its upstream graph is not executed) and "
+                    "output what's stored at path instead.",
+                ),
+                io.Latent.Input("samples", lazy=True),
+                io.String.Input(
+                    "path", default="",
+                    tooltip="Absolute file path to read/write the latent (safetensors). "
+                    "\".latent\" is appended if the path has no extension.",
+                ),
+                io.Boolean.Input(
+                    "create_dirs", default=True,
+                    tooltip="Create parent directories if they don't exist (Save mode only).",
+                ),
+                io.Boolean.Input(
+                    "stop_here", default=False,
+                    tooltip="Save mode only: after saving, block every node downstream of "
+                    "this one's output from executing (silently -- no error). Lets you "
+                    "split an expensive workflow into independently-queueable phases "
+                    "(e.g. generation, then a separate run for frame interpolation). "
+                    "Ignored in Load mode, where the loaded latent always passes through.",
+                ),
+            ],
+            outputs=[io.Latent.Output()],
+            is_output_node=True,
+        )
+
+    @classmethod
+    def check_lazy_status(cls, save, samples=None, path=None, create_dirs=None, stop_here=None):
+        if save and samples is None:
+            return ["samples"]
+        return []
+
+    @staticmethod
+    def _normalize_path(path):
+        if not os.path.splitext(path)[1]:
+            return f"{path}.latent"
+        return path
+
+    @classmethod
+    def execute(cls, save, samples, path, create_dirs=True, stop_here=False) -> io.NodeOutput:
+        path = cls._normalize_path(path)
+        if save:
+            tensors, metadata = build_latent_tensors_and_metadata(samples)
+            parent = os.path.dirname(path)
+            if parent and create_dirs:
+                os.makedirs(parent, exist_ok=True)
+            safetensors.torch.save_file(tensors, path, metadata=metadata)
+            if stop_here:
+                return io.NodeOutput(ExecutionBlocker(None), ui={"text": [f"wrote {path}"]})
+            return io.NodeOutput(samples, ui={"text": [f"wrote {path}"]})
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"BackupLatentPath: file not found: {path!r}")
+        tensors = safetensors.torch.load_file(path, device="cpu")
+        with safetensors.safe_open(path, framework="pt") as f:
+            metadata = f.metadata()
+        return io.NodeOutput(latent_from_tensors_and_metadata(tensors, metadata))
+
+    @classmethod
+    def fingerprint_inputs(cls, save, samples=None, path=None, create_dirs=None, stop_here=None):
+        if not save:
+            return _fingerprint_file(cls._normalize_path(path))
+        return float("nan")  # Save mode: always re-run so the file gets written.
 
 
 class SaveLatent(io.ComfyNode):
