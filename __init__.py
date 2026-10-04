@@ -1,9 +1,32 @@
-"""Top-level package for verinuddle."""
+from comfy_api.latest import ComfyExtension, io
+from typing_extensions import override
 
-__all__ = ["comfy_entrypoint"]
+from .latent_io import SaveLatentPath, LoadLatentPath, BackupLatentPath, SaveLatent, LoadLatent
+from .conditioning_io import (
+    SaveConditioningPath,
+    LoadConditioningPath,
+    BackupConditioningPath,
+    SaveConditioning,
+    LoadConditioning,
+)
 
-__author__ = """Verigen"""
-__email__ = "verigen.project@gmail.com"
-__version__ = "0.1.0"
 
-from .src.verinuddle import comfy_entrypoint
+class VerinuddleExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [
+            SaveLatentPath,
+            LoadLatentPath,
+            BackupLatentPath,
+            SaveLatent,
+            LoadLatent,
+            SaveConditioningPath,
+            LoadConditioningPath,
+            BackupConditioningPath,
+            SaveConditioning,
+            LoadConditioning,
+        ]
+
+
+async def comfy_entrypoint() -> VerinuddleExtension:
+    return VerinuddleExtension()
