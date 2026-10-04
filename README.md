@@ -1,4 +1,4 @@
-# Verinuddle
+# Verinuddle_V2
 
 Custom Save/Load Latent nodes for [ComfyUI](https://github.com/comfyanonymous/ComfyUI).
 
@@ -28,14 +28,5 @@ Clone this repository into `ComfyUI/custom_nodes` and restart ComfyUI:
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/verigen/ComfyUI-Verinuddle.git
-```
-
-## Develop
-
-```bash
-cd ComfyUI-Verinuddle
-pip install -e .[dev]
-pre-commit install
-pytest tests/
+git clone https://github.com/SveSop/ComfyUI-Verinuddle_V2.git
 ```
