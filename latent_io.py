@@ -17,6 +17,7 @@ It's extended in two ways core isn't:
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
@@ -129,7 +130,9 @@ def latent_from_tensors_and_metadata(tensors: dict, metadata: dict | None) -> di
                 "latent_io: file contains a nested noise_mask (nested_noise_mask_streams="
                 f"{mask_streams}) but this ComfyUI build has no comfy.nested_tensor"
             )
-        latent["noise_mask"] = NestedTensor(_collect_nested_streams(tensors, "noise_mask", mask_streams))
+        latent["noise_mask"] = NestedTensor(
+            _collect_nested_streams(tensors, "noise_mask", mask_streams)
+        )
     elif "noise_mask" in tensors:
         latent["noise_mask"] = tensors["noise_mask"]
 
@@ -150,6 +153,137 @@ def _fingerprint_file(path: str):
         return float("nan")
 
 
+def _under_output(path):
+    """Resolve a path inside ComfyUI's output folder.
+
+    Relative paths are resolved against the ComfyUI output directory.
+    Absolute paths are allowed only when they already live inside output/.
+    """
+    root = os.path.realpath(folder_paths.get_output_directory())
+    p = (path or "").strip().strip('"').strip("'") or "h3_latent/Clip"
+
+    resolved = os.path.realpath(
+        p if os.path.isabs(p) else os.path.join(root, p)
+    )
+
+    if resolved != root and not resolved.startswith(root + os.sep):
+        return None
+
+    return resolved
+
+
+def _resolve_latent_path(path, index=0):
+    """Resolve an indexed latent slot from a ComfyUI output filename prefix.
+
+    Example:
+
+        path  = h3_latent/Clip
+        index = 1
+
+    resolves to:
+
+        output/h3_latent/Clip_00001.safetensors
+
+    Index 0 is handled by LoadLatent itself and means no latent.
+    """
+    root = os.path.realpath(folder_paths.get_output_directory())
+    p = (path or "").strip().strip('"').strip("'") or "h3_latent/Clip"
+
+    # Resolve the user path relative to ComfyUI's output directory.
+    resolved = os.path.realpath(
+        p if os.path.isabs(p) else os.path.join(root, p)
+    )
+
+    if resolved != root and not resolved.startswith(root + os.sep):
+        raise FileNotFoundError(
+            "Verinuddle: path must stay inside the ComfyUI output folder."
+        )
+
+    idx = int(index)
+
+    if idx <= 0:
+        raise FileNotFoundError(
+            "Verinuddle: index 0 does not load a file."
+        )
+
+    # If the supplied path is already an existing file, load that file.
+    if os.path.isfile(resolved):
+        return resolved
+
+    # Treat the supplied path as a filename prefix.
+    folder = os.path.dirname(resolved)
+    prefix = os.path.basename(resolved)
+
+    if not os.path.isdir(folder):
+        raise FileNotFoundError(
+            "Verinuddle: folder does not exist: %s" % folder
+        )
+
+    endings = (
+        f"_{idx:05d}.safetensors",
+        f"_clip{idx:03d}.safetensors",
+    )
+
+    files = [
+        os.path.join(folder, name)
+        for name in os.listdir(folder)
+        if name.startswith(prefix + "_")
+        and name.endswith(endings)
+    ]
+
+    if not files:
+        near = [
+            name
+            for name in os.listdir(folder)
+            if name.startswith(prefix + "_")
+            and name.endswith(f"_{idx:05d}_.safetensors")
+        ]
+
+        hint = ""
+        if near:
+            hint = (
+                f" Found {near[0]}, which is an auto-numbered save "
+                f"(trailing underscore = numbered by RUN)."
+            )
+
+        raise FileNotFoundError(
+            "Verinuddle: no saved latent for index %d "
+            "(no %s_%05d.safetensors in %s).%s"
+            % (idx, prefix, idx, folder, hint)
+        )
+
+    return max(files, key=os.path.getmtime)
+
+
+def _write_safetensors(path, tensors, metadata):
+    """Safely overwrite a safetensors file on Windows.
+
+    safetensors load_file can leave a file memory-mapped. Writing a temporary
+    sibling and replacing the target avoids Windows sharing violations when
+    an indexed slot is overwritten.
+    """
+    tmp = path + ".tmp"
+
+    try:
+        safetensors.torch.save_file(
+            tensors,
+            tmp,
+            metadata=metadata,
+        )
+
+        try:
+            os.replace(tmp, path)
+        except OSError:
+            gc.collect()
+            os.replace(tmp, path)
+
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
 class SaveLatentPath(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -161,12 +295,16 @@ class SaveLatentPath(io.ComfyNode):
             inputs=[
                 io.Latent.Input("samples"),
                 io.String.Input(
-                    "path", default="",
-                    tooltip="Absolute file path to write the latent to (safetensors). "
-                    "\".latent\" is appended if the path has no extension.",
+                    "path",
+                    default="",
+                    tooltip=(
+                        "Absolute file path to write the latent to (safetensors). "
+                        "\".latent\" is appended if the path has no extension."
+                    ),
                 ),
                 io.Boolean.Input(
-                    "create_dirs", default=True,
+                    "create_dirs",
+                    default=True,
                     tooltip="Create parent directories if they don't exist.",
                 ),
             ],
@@ -178,12 +316,23 @@ class SaveLatentPath(io.ComfyNode):
     def execute(cls, samples, path, create_dirs=True) -> io.NodeOutput:
         if not os.path.splitext(path)[1]:
             path = f"{path}.latent"
+
         tensors, metadata = build_latent_tensors_and_metadata(samples)
+
         parent = os.path.dirname(path)
         if parent and create_dirs:
             os.makedirs(parent, exist_ok=True)
-        safetensors.torch.save_file(tensors, path, metadata=metadata)
-        return io.NodeOutput(samples, ui={"text": [f"wrote {path}"]})
+
+        safetensors.torch.save_file(
+            tensors,
+            path,
+            metadata=metadata,
+        )
+
+        return io.NodeOutput(
+            samples,
+            ui={"text": [f"wrote {path}"]},
+        )
 
 
 class LoadLatentPath(io.ComfyNode):
@@ -195,7 +344,13 @@ class LoadLatentPath(io.ComfyNode):
             search_aliases=["import latent"],
             category=_CAT,
             inputs=[
-                io.String.Input("path", default="", tooltip="Absolute path of a .latent/.safetensors file to read."),
+                io.String.Input(
+                    "path",
+                    default="",
+                    tooltip=(
+                        "Absolute path of a .latent/.safetensors file to read."
+                    ),
+                ),
             ],
             outputs=[io.Latent.Output()],
         )
@@ -203,11 +358,26 @@ class LoadLatentPath(io.ComfyNode):
     @classmethod
     def execute(cls, path) -> io.NodeOutput:
         if not os.path.isfile(path):
-            raise FileNotFoundError(f"LoadLatentPath: file not found: {path!r}")
-        tensors = safetensors.torch.load_file(path, device="cpu")
-        with safetensors.safe_open(path, framework="pt") as f:
+            raise FileNotFoundError(
+                f"LoadLatentPath: file not found: {path!r}"
+            )
+
+        tensors = safetensors.torch.load_file(
+            path,
+            device="cpu",
+        )
+
+        with safetensors.safe_open(
+            path,
+            framework="pt",
+        ) as f:
             metadata = f.metadata()
-        samples = latent_from_tensors_and_metadata(tensors, metadata)
+
+        samples = latent_from_tensors_and_metadata(
+            tensors,
+            metadata,
+        )
+
         return io.NodeOutput(samples)
 
     @classmethod
@@ -238,29 +408,44 @@ class BackupLatentPath(io.ComfyNode):
             category=_CAT,
             inputs=[
                 io.Boolean.Input(
-                    "save", default=True,
-                    label_on="Save", label_off="Load",
-                    tooltip="Save: write samples to path and pass them through unchanged. "
-                    "Load: ignore samples (its upstream graph is not executed) and "
-                    "output what's stored at path instead.",
+                    "save",
+                    default=True,
+                    label_on="Save",
+                    label_off="Load",
+                    tooltip=(
+                        "Save: write samples to path and pass them through unchanged. "
+                        "Load: ignore samples (its upstream graph is not executed) "
+                        "and output what's stored at path instead."
+                    ),
                 ),
                 io.Latent.Input("samples", lazy=True),
                 io.String.Input(
-                    "path", default="",
-                    tooltip="Absolute file path to read/write the latent (safetensors). "
-                    "\".latent\" is appended if the path has no extension.",
+                    "path",
+                    default="",
+                    tooltip=(
+                        "Absolute file path to read/write the latent (safetensors). "
+                        "\".latent\" is appended if the path has no extension."
+                    ),
                 ),
                 io.Boolean.Input(
-                    "create_dirs", default=True,
-                    tooltip="Create parent directories if they don't exist (Save mode only).",
+                    "create_dirs",
+                    default=True,
+                    tooltip=(
+                        "Create parent directories if they don't exist "
+                        "(Save mode only)."
+                    ),
                 ),
                 io.Boolean.Input(
-                    "stop_here", default=False,
-                    tooltip="Save mode only: after saving, block every node downstream of "
-                    "this one's output from executing (silently -- no error). Lets you "
-                    "split an expensive workflow into independently-queueable phases "
-                    "(e.g. generation, then a separate run for frame interpolation). "
-                    "Ignored in Load mode, where the loaded latent always passes through.",
+                    "stop_here",
+                    default=False,
+                    tooltip=(
+                        "Save mode only: after saving, block every node downstream "
+                        "of this one's output from executing (silently -- no error). "
+                        "Lets you split an expensive workflow into independently-"
+                        "queueable phases (e.g. generation, then a separate run "
+                        "for frame interpolation). Ignored in Load mode, where "
+                        "the loaded latent always passes through."
+                    ),
                 ),
             ],
             outputs=[io.Latent.Output()],
@@ -268,7 +453,14 @@ class BackupLatentPath(io.ComfyNode):
         )
 
     @classmethod
-    def check_lazy_status(cls, save, samples=None, path=None, create_dirs=None, stop_here=None):
+    def check_lazy_status(
+        cls,
+        save,
+        samples=None,
+        path=None,
+        create_dirs=None,
+        stop_here=None,
+    ):
         if save and samples is None:
             return ["samples"]
         return []
@@ -280,33 +472,91 @@ class BackupLatentPath(io.ComfyNode):
         return path
 
     @classmethod
-    def execute(cls, save, samples, path, create_dirs=True, stop_here=False) -> io.NodeOutput:
+    def execute(
+        cls,
+        save,
+        samples,
+        path,
+        create_dirs=True,
+        stop_here=False,
+    ) -> io.NodeOutput:
         path = cls._normalize_path(path)
+
         if save:
             tensors, metadata = build_latent_tensors_and_metadata(samples)
+
             parent = os.path.dirname(path)
             if parent and create_dirs:
                 os.makedirs(parent, exist_ok=True)
-            safetensors.torch.save_file(tensors, path, metadata=metadata)
+
+            safetensors.torch.save_file(
+                tensors,
+                path,
+                metadata=metadata,
+            )
+
             if stop_here:
-                return io.NodeOutput(ExecutionBlocker(None), ui={"text": [f"wrote {path}"]})
-            return io.NodeOutput(samples, ui={"text": [f"wrote {path}"]})
+                return io.NodeOutput(
+                    ExecutionBlocker(None),
+                    ui={"text": [f"wrote {path}"]},
+                )
+
+            return io.NodeOutput(
+                samples,
+                ui={"text": [f"wrote {path}"]},
+            )
+
         if not os.path.isfile(path):
-            raise FileNotFoundError(f"BackupLatentPath: file not found: {path!r}")
-        tensors = safetensors.torch.load_file(path, device="cpu")
-        with safetensors.safe_open(path, framework="pt") as f:
+            raise FileNotFoundError(
+                f"BackupLatentPath: file not found: {path!r}"
+            )
+
+        tensors = safetensors.torch.load_file(
+            path,
+            device="cpu",
+        )
+
+        with safetensors.safe_open(
+            path,
+            framework="pt",
+        ) as f:
             metadata = f.metadata()
-        return io.NodeOutput(latent_from_tensors_and_metadata(tensors, metadata))
+
+        return io.NodeOutput(
+            latent_from_tensors_and_metadata(
+                tensors,
+                metadata,
+            )
+        )
 
     @classmethod
-    def fingerprint_inputs(cls, save, samples=None, path=None, create_dirs=None, stop_here=None):
+    def fingerprint_inputs(
+        cls,
+        save,
+        samples=None,
+        path=None,
+        create_dirs=None,
+        stop_here=None,
+    ):
         if not save:
-            return _fingerprint_file(cls._normalize_path(path))
-        return float("nan")  # Save mode: always re-run so the file gets written.
+            return _fingerprint_file(
+                cls._normalize_path(path)
+            )
+
+        return float("nan")
 
 
 class SaveLatent(io.ComfyNode):
-    """Faithful mirror of core SaveLatent (nodes.py), routed through the nested-aware codec."""
+    """Save a LATENT using indexed H3 clip slots.
+
+    index > 0:
+        Save to an explicit slot such as Clip_00001.safetensors.
+        Existing contents of that slot are overwritten.
+
+    index = 0:
+        Use ComfyUI's normal automatic counter, producing names such as
+        Clip_00001_.safetensors.
+    """
 
     @classmethod
     def define_schema(cls):
@@ -317,76 +567,200 @@ class SaveLatent(io.ComfyNode):
             category=_CAT,
             inputs=[
                 io.Latent.Input("samples"),
-                io.String.Input("filename_prefix", default="latents/ComfyUI"),
+                io.String.Input(
+                    "path",
+                    default="h3_latent/Clip",
+                    tooltip=(
+                        "Path relative to the ComfyUI output folder. "
+                        "For example, h3_latent/Clip saves into "
+                        "output/h3_latent."
+                    ),
+                ),
+                io.Int.Input(
+                    "index",
+                    default=1,
+                    min=0,
+                    max=9999,
+                    step=1,
+                    tooltip=(
+                        "Explicit clip slot. 1 writes Clip_00001.safetensors "
+                        "and overwrites that slot. 0 uses ComfyUI's automatic "
+                        "run counter and writes Clip_00001_.safetensors, etc."
+                    ),
+                ),
             ],
             outputs=[io.Latent.Output()],
-            hidden=[io.Hidden.prompt, io.Hidden.extra_pnginfo],
             is_output_node=True,
         )
 
     @classmethod
-    def execute(cls, samples, filename_prefix="latents/ComfyUI") -> io.NodeOutput:
-        full_output_folder, filename, counter, subfolder, _ = folder_paths.get_save_image_path(
-            filename_prefix, folder_paths.get_output_directory()
+    def execute(
+        cls,
+        samples,
+        path="h3_latent/Clip",
+        index=1,
+    ) -> io.NodeOutput:
+        # Use ComfyUI's normal filename-prefix handling to determine the
+        # output directory, filename prefix, and automatic counter.
+        folder, filename, counter, _, _ = folder_paths.get_save_image_path(
+            path,
+            folder_paths.get_output_directory(),
         )
 
-        metadata = None
-        if not args.disable_metadata:
-            prompt_info = json.dumps(cls.hidden.prompt) if cls.hidden.prompt is not None else ""
-            metadata = {"prompt": prompt_info}
-            if cls.hidden.extra_pnginfo is not None:
-                for x in cls.hidden.extra_pnginfo:
-                    metadata[x] = json.dumps(cls.hidden.extra_pnginfo[x])
+        os.makedirs(folder, exist_ok=True)
 
-        tensors, latent_metadata = build_latent_tensors_and_metadata(samples)
-        if metadata is not None:
-            metadata.update(latent_metadata)
+        if int(index) > 0:
+            # Explicit clip slot.
+            # Example:
+            #   path  = h3_latent/Clip
+            #   index = 1
+            #   -> output/h3_latent/Clip_00001.safetensors
+            full_path = os.path.join(
+                folder,
+                f"{filename}_{int(index):05d}.safetensors",
+            )
         else:
-            metadata = latent_metadata
+            # ComfyUI automatic run counter.
+            # The trailing underscore deliberately distinguishes these files
+            # from explicit clip slots.
+            full_path = os.path.join(
+                folder,
+                f"{filename}_{counter:05d}_.safetensors",
+            )
 
-        file = f"{filename}_{counter:05}_.latent"
-        results = [{"filename": file, "subfolder": subfolder, "type": "output"}]
+        # Preserve Verinuddle's existing nested-H3 serialization.
+        tensors, metadata = build_latent_tensors_and_metadata(samples)
 
-        safetensors.torch.save_file(tensors, os.path.join(full_output_folder, file), metadata=metadata)
-        return io.NodeOutput(samples, ui={"latents": results})
+        # Use a temporary file + os.replace() so an indexed slot can safely
+        # overwrite a file that may still be memory-mapped on Windows.
+        _write_safetensors(
+            full_path,
+            tensors,
+            metadata,
+        )
+
+        return io.NodeOutput(
+            samples,
+            ui={"text": [f"wrote {full_path}"]},
+        )
 
 
 class LoadLatent(io.ComfyNode):
-    """Faithful mirror of core LoadLatent (nodes.py), routed through the nested-aware codec."""
+    """Load a LATENT from an indexed H3 clip slot.
+
+    index = 0:
+        No previous clip. Returns None.
+
+    index > 0:
+        Loads the corresponding explicit slot, e.g.
+        index 1 -> Clip_00001.safetensors
+        index 2 -> Clip_00002.safetensors
+    """
 
     @classmethod
     def define_schema(cls):
-        input_dir = folder_paths.get_input_directory()
-        files = [
-            f for f in os.listdir(input_dir)
-            if os.path.isfile(os.path.join(input_dir, f)) and f.endswith(".latent")
-        ]
         return io.Schema(
             node_id="verinuddle_LoadLatent",
             display_name="Load Latent",
             search_aliases=["import latent", "open latent"],
             category=_CAT,
             inputs=[
-                io.Combo.Input("latent", options=sorted(files)),
+                io.String.Input(
+                    "path",
+                    default="h3_latent/Clip",
+                    tooltip=(
+                        "Path relative to the ComfyUI output folder. "
+                        "For example, h3_latent/Clip searches "
+                        "output/h3_latent."
+                    ),
+                ),
+                io.Int.Input(
+                    "index",
+                    default=1,
+                    min=0,
+                    max=9999,
+                    step=1,
+                    tooltip=(
+                        "Clip slot to load. 1 loads Clip_00001.safetensors. "
+                        "0 means no previous clip and loads nothing."
+                    ),
+                ),
             ],
             outputs=[io.Latent.Output()],
         )
 
     @classmethod
-    def execute(cls, latent) -> io.NodeOutput:
-        latent_path = folder_paths.get_annotated_filepath(latent)
-        tensors = safetensors.torch.load_file(latent_path, device="cpu")
-        with safetensors.safe_open(latent_path, framework="pt") as f:
+    def execute(
+        cls,
+        path="h3_latent/Clip",
+        index=1,
+    ) -> io.NodeOutput:
+        if int(index) <= 0:
+            return io.NodeOutput(None)
+
+        latent_path = _resolve_latent_path(
+            path,
+            index,
+        )
+
+        tensors = safetensors.torch.load_file(
+            latent_path,
+            device="cpu",
+        )
+
+        with safetensors.safe_open(
+            latent_path,
+            framework="pt",
+        ) as f:
             metadata = f.metadata()
-        samples = latent_from_tensors_and_metadata(tensors, metadata)
+
+        # This reconstructs the full Verinuddle LATENT, including a nested
+        # H3 video+audio NestedTensor when the saved file contains one.
+        samples = latent_from_tensors_and_metadata(
+            tensors,
+            metadata,
+        )
+
         return io.NodeOutput(samples)
 
     @classmethod
-    def fingerprint_inputs(cls, latent):
-        return _fingerprint_file(folder_paths.get_annotated_filepath(latent))
+    def fingerprint_inputs(
+        cls,
+        path,
+        index=1,
+    ):
+        if int(index) <= 0:
+            return "disabled"
+
+        try:
+            latent_path = _resolve_latent_path(
+                path,
+                index,
+            )
+            return "%s:%d" % (
+                latent_path,
+                os.stat(latent_path).st_mtime_ns,
+            )
+        except Exception:
+            # If the file doesn't exist yet, don't let ComfyUI cache a
+            # permanently invalid result.
+            return float("nan")
 
     @classmethod
-    def validate_inputs(cls, latent):
-        if not folder_paths.exists_annotated_filepath(latent):
-            return f"Invalid latent file: {latent}"
-        return True
+    def validate_inputs(
+        cls,
+        path,
+        index=1,
+    ):
+        if int(index) <= 0:
+            return True
+
+        try:
+            _resolve_latent_path(
+                path,
+                index,
+            )
+            return True
+        except FileNotFoundError as e:
+            return str(e)
+
