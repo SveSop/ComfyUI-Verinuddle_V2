@@ -14,10 +14,11 @@ byte-identical to core's own output for ordinary (non-nested) latents.
 
 | Title | Location semantics |
 |---|---|
-| Load Latent | flat combo over `input/`, like core |
-| Save Latent | `output/`, `filename_prefix` + counter, like core |
+| Load Latent | flat combo over `output/`, `filename_prefix` + counter, like motion context |
+| Save Latent | `output/`, `filename_prefix` + counter, like motion context |
 | Load Latent (Path) | arbitrary path |
 | Save Latent (Path) | arbitrary path |
+| H3 Latent Control | Control node for nodes |
 
 See [docs/latent_io.md](docs/latent_io.md) for the on-disk schema and interop
 details.
@@ -30,3 +31,11 @@ Clone this repository into `ComfyUI/custom_nodes` and restart ComfyUI:
 cd ComfyUI/custom_nodes
 git clone https://github.com/SveSop/ComfyUI-Verinuddle_V2.git
 ```
+
+### Original repository
+
+[https://github.com/verigen/ComfyUI-Verinuddle.git](https://github.com/verigen/ComfyUI-Verinuddle.git)
+
+Usage idea:
+
+[https://github.com/NikoDemon80/ComfyUI-H3-Motion-Context.git](https://github.com/NikoDemon80/ComfyUI-H3-Motion-Context.git)
