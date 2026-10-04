@@ -18,6 +18,7 @@ It's extended in two ways core isn't:
 from __future__ import annotations
 
 import gc
+import glob
 import hashlib
 import json
 import os
@@ -282,6 +283,113 @@ def _write_safetensors(path, tensors, metadata):
             os.remove(tmp)
         except OSError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# H3 Latent Control
+# ---------------------------------------------------------------------------
+
+
+def _latent_prefix_info(path):
+    """Resolve a Save/Load path as a filename prefix under output/.
+
+    Example: h3_latent/Clip -> (output/h3_latent, Clip).
+    Returns None when the path would escape the ComfyUI output directory.
+    """
+    root = os.path.realpath(folder_paths.get_output_directory())
+    p = (path or "").strip().strip('\"').strip("'") or "h3_latent/Clip"
+    resolved = os.path.realpath(
+        p if os.path.isabs(p) else os.path.join(root, p)
+    )
+
+    if resolved != root and not resolved.startswith(root + os.sep):
+        return None
+
+    folder = os.path.dirname(resolved)
+    prefix = os.path.basename(resolved)
+    return folder, prefix
+
+
+def _clear_latent_prefix(path):
+    """Delete only <prefix>_*.safetensors under the configured output path.
+
+    The path is treated as the same filename prefix used by SaveLatent and
+    LoadLatent. The resolved location must remain inside ComfyUI's output
+    directory.
+    """
+    info = _latent_prefix_info(path)
+    if info is None:
+        raise ValueError(
+            "Verinuddle: clear path must stay inside the ComfyUI output folder."
+        )
+
+    folder, prefix = info
+    if not os.path.isdir(folder):
+        return 0
+
+    pattern = os.path.join(folder, glob.escape(prefix) + "_*.safetensors")
+    removed = 0
+
+    for file_path in glob.glob(pattern):
+        if not os.path.isfile(file_path):
+            continue
+        try:
+            os.remove(file_path)
+            removed += 1
+        except OSError:
+            gc.collect()
+            os.remove(file_path)
+            removed += 1
+
+    return removed
+
+
+def register_latent_control_routes():
+    """Register the Clear latents HTTP route once."""
+    try:
+        from aiohttp import web
+        from server import PromptServer
+    except ImportError:
+        return
+
+    server = getattr(PromptServer, "instance", None)
+    if server is None or getattr(register_latent_control_routes, "_done", False):
+        return
+
+    @server.routes.post("/verinuddle/clear_latents")
+    async def _clear_latents_route(request):
+        # This route deletes files, so require a same-origin request.
+        host = (request.headers.get("Host") or "").strip().lower()
+        origin = (request.headers.get("Origin") or "").strip().lower()
+        referer = (request.headers.get("Referer") or "").strip().lower()
+
+        if origin:
+            from urllib.parse import urlsplit
+            origin_host = (urlsplit(origin).netloc or "").lower()
+            if origin_host != host:
+                return web.json_response(
+                    {"error": "Cross-origin request blocked."}, status=403
+                )
+        elif referer:
+            from urllib.parse import urlsplit
+            referer_host = (urlsplit(referer).netloc or "").lower()
+            if referer_host != host:
+                return web.json_response(
+                    {"error": "Cross-origin request blocked."}, status=403
+                )
+        else:
+            return web.json_response(
+                {"error": "Missing Origin or Referer."}, status=403
+            )
+
+        try:
+            data = await request.json()
+            removed = _clear_latent_prefix(data.get("path") or "h3_latent/Clip")
+            return web.json_response({"removed": removed})
+        except (ValueError, OSError) as e:
+            return web.json_response({"error": str(e)}, status=400)
+
+    register_latent_control_routes._done = True
 
 
 class SaveLatentPath(io.ComfyNode):
@@ -676,7 +784,7 @@ class LoadLatent(io.ComfyNode):
                 ),
                 io.Int.Input(
                     "index",
-                    default=1,
+                    default=0,
                     min=0,
                     max=9999,
                     step=1,
@@ -764,3 +872,23 @@ class LoadLatent(io.ComfyNode):
         except FileNotFoundError as e:
             return str(e)
 
+
+
+
+class H3LatentControl(io.ComfyNode):
+    """UI control node for the indexed H3 Save/Load Latent pair."""
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="verinuddle_H3LatentControl",
+            display_name="H3 Latent Control",
+            search_aliases=["h3 latent control", "latent control"],
+            category=_CAT,
+            inputs=[],
+            outputs=[],
+        )
+
+    @classmethod
+    def execute(cls) -> io.NodeOutput:
+        return io.NodeOutput(())

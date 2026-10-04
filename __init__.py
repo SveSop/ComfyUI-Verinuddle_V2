@@ -1,3 +1,5 @@
+WEB_DIRECTORY = "./web"
+
 from comfy_api.latest import ComfyExtension, io
 from typing_extensions import override
 
@@ -7,6 +9,8 @@ from .latent_io import (
     BackupLatentPath,
     SaveLatent,
     LoadLatent,
+    H3LatentControl,
+    register_latent_control_routes,
 )
 
 
@@ -19,8 +23,10 @@ class VerinuddleExtension(ComfyExtension):
             BackupLatentPath,
             SaveLatent,
             LoadLatent,
+            H3LatentControl,
         ]
 
 
 async def comfy_entrypoint() -> VerinuddleExtension:
+    register_latent_control_routes()
     return VerinuddleExtension()
